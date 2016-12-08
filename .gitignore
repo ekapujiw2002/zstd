@@ -1,6 +1,7 @@
 # Object files
 *.o
 *.ko
+*.dSYM
 
 # Libraries
 *.lib
@@ -20,7 +21,7 @@ zstd
 
 # Test artefacts
 tmp*
-dictionary
+dictionary*
 
 # Other files
 .directory
@@ -30,3 +31,5 @@ _zstdbench/
 *.idea
 *.swp
 .DS_Store
+googletest/
+*.d

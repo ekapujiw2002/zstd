@@ -41,16 +41,32 @@ $ECHO "\nStarting playTests.sh isWindows=$isWindows"
 [ -n "$ZSTD" ] || die "ZSTD variable must be defined!"
 
 file $ZSTD
+
 $ECHO "\n**** simple tests **** "
 
 ./datagen > tmp
+$ECHO "test : basic compression "
 $ZSTD -f tmp                      # trivial compression case, creates tmp.zst
+$ECHO "test : basic decompression"
 $ZSTD -df tmp.zst                 # trivial decompression case (overwrites tmp)
 $ECHO "test : too large compression level (must fail)"
 $ZSTD -99 -f tmp  # too large compression level, automatic sized down
 $ECHO "test : compress to stdout"
 $ZSTD tmp -c > tmpCompressed
 $ZSTD tmp --stdout > tmpCompressed       # long command format
+$ECHO "test : compress to named file"
+rm tmpCompressed
+$ZSTD tmp -o tmpCompressed
+ls tmpCompressed   # must work
+$ECHO "test : -o must be followed by filename (must fail)"
+$ZSTD tmp -of tmpCompressed && die "-o must be followed by filename "
+$ECHO "test : force write, correct order"
+$ZSTD tmp -fo tmpCompressed
+$ECHO "test : forgotten argument"
+cp tmp tmp2
+$ZSTD tmp2 -fo && die "-o must be followed by filename "
+$ECHO "test : implied stdout when input is stdin"
+$ECHO bob | $ZSTD | $ZSTD -d
 $ECHO "test : null-length file roundtrip"
 $ECHO -n '' | $ZSTD - --stdout | $ZSTD -d --stdout
 $ECHO "test : decompress file with wrong suffix (must fail)"
@@ -65,6 +81,11 @@ $ZSTD -dc   < tmp.zst > $INTOVOID   # combine decompression, stdin & stdout
 $ZSTD -dc - < tmp.zst > $INTOVOID
 $ZSTD -d    < tmp.zst > $INTOVOID   # implicit stdout when stdin is used
 $ZSTD -d  - < tmp.zst > $INTOVOID
+$ECHO "test : impose memory limitation (must fail)"
+$ZSTD -d -f tmp.zst -M2K -c > $INTOVOID && die "decompression needs more memory than allowed"
+$ZSTD -d -f tmp.zst --memlimit=2K -c > $INTOVOID && die "decompression needs more memory than allowed"  # long command
+$ZSTD -d -f tmp.zst --memory=2K -c > $INTOVOID && die "decompression needs more memory than allowed"  # long command
+$ZSTD -d -f tmp.zst --memlimit-decompress=2K -c > $INTOVOID && die "decompression needs more memory than allowed"  # long command
 $ECHO "test : overwrite protection"
 $ZSTD -q tmp && die "overwrite check failed!"
 $ECHO "test : force overwrite"
@@ -178,18 +199,26 @@ $ECHO "- Create first dictionary"
 $ZSTD --train *.c ../programs/*.c -o tmpDict
 cp $TESTFILE tmp
 $ZSTD -f tmp -D tmpDict
-$ZSTD -d tmp.zst -D tmpDict -of result
+$ZSTD -d tmp.zst -D tmpDict -fo result
 diff $TESTFILE result
 $ECHO "- Create second (different) dictionary"
 $ZSTD --train *.c ../programs/*.c ../programs/*.h -o tmpDictC
-$ZSTD -d tmp.zst -D tmpDictC -of result && die "wrong dictionary not detected!"
+$ZSTD -d tmp.zst -D tmpDictC -fo result && die "wrong dictionary not detected!"
 $ECHO "- Create dictionary with short dictID"
 $ZSTD --train *.c ../programs/*.c --dictID 1 -o tmpDict1
 cmp tmpDict tmpDict1 && die "dictionaries should have different ID !"
+$ECHO "- Create dictionary with wrong dictID parameter order (must fail)"
+$ZSTD --train *.c ../programs/*.c --dictID -o 1 tmpDict1 && die "wrong order : --dictID must be followed by argument "
+$ECHO "- Create dictionary with size limit"
+$ZSTD --train *.c ../programs/*.c -o tmpDict2 --maxdict 4K -v
+$ECHO "- Create dictionary with wrong parameter order (must fail)"
+$ZSTD --train *.c ../programs/*.c -o tmpDict2 --maxdict -v 4K && die "wrong order : --maxdict must be followed by argument "
 $ECHO "- Compress without dictID"
 $ZSTD -f tmp -D tmpDict1 --no-dictID
-$ZSTD -d tmp.zst -D tmpDict -of result
+$ZSTD -d tmp.zst -D tmpDict -fo result
 diff $TESTFILE result
+$ECHO "- Compress with wrong argument order (must fail)"
+$ZSTD tmp -Df tmpDict1 -c > /dev/null && die "-D must be followed by dictionary name "
 $ECHO "- Compress multiple files with dictionary"
 rm -rf dirTestDict
 mkdir dirTestDict
@@ -200,7 +229,7 @@ $MD5SUM dirTestDict/* > tmph1
 $ZSTD -f --rm dirTestDict/* -D tmpDictC
 $ZSTD -d --rm dirTestDict/*.zst -D tmpDictC  # note : use internal checksum by default
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  $ECHO "test skipped on OS-X"  # not compatible with OS-X's md5
+  $ECHO "md5sum -c not supported on OS-X : test skipped"  # not compatible with OS-X's md5
 else
   $MD5SUM -c tmph1
 fi
@@ -227,6 +256,17 @@ $ZSTD -t tmp3 && die "bad file not detected !"   # detects 0-sized files as bad
 $ECHO "test --rm and --test combined "
 $ZSTD -t --rm tmp1.zst
 ls -ls tmp1.zst  # check file is still present
+
+
+$ECHO "\n**** benchmark mode tests **** "
+
+$ECHO "bench one file"
+./datagen > tmp1
+$ZSTD -bi1 tmp1
+$ECHO "bench multiple levels"
+$ZSTD -i1b1e3 tmp1
+$ECHO "with recursive and quiet modes"
+$ZSTD -rqi1b1e3 tmp1
 
 
 $ECHO "\n**** zstd round-trip tests **** "

@@ -22,7 +22,6 @@
 #include "zstd.h"            /* ZSTD_VERSION_STRING */
 #define FSE_STATIC_LINKING_ONLY   /* FSE_DTABLE_SIZE_U32 */
 #include "fse.h"
-#include "zbuff.h"
 #include "datagen.h"
 
 
@@ -121,39 +120,48 @@ size_t local_ZSTD_decodeLiteralsBlock(void* dst, size_t dstSize, void* buff2, co
 }
 
 extern size_t ZSTD_getcBlockSize(const void* src, size_t srcSize, blockProperties_t* bpPtr);
-extern size_t ZSTD_decodeSeqHeaders(int* nbSeq, FSE_DTable* DTableLL, FSE_DTable* DTableML, FSE_DTable* DTableOffb, U32 tableRepeatFlag, const void* src, size_t srcSize);
+extern size_t ZSTD_decodeSeqHeaders(ZSTD_DCtx* dctx, int* nbSeq, const void* src, size_t srcSize);
 size_t local_ZSTD_decodeSeqHeaders(void* dst, size_t dstSize, void* buff2, const void* src, size_t srcSize)
 {
-    U32 DTableML[FSE_DTABLE_SIZE_U32(10)], DTableLL[FSE_DTABLE_SIZE_U32(10)], DTableOffb[FSE_DTABLE_SIZE_U32(9)];   /* MLFSELog, LLFSELog and OffFSELog are not public values */
     int nbSeq;
     (void)src; (void)srcSize; (void)dst; (void)dstSize;
-    return ZSTD_decodeSeqHeaders(&nbSeq, DTableLL, DTableML, DTableOffb, 0, buff2, g_cSize);
+    return ZSTD_decodeSeqHeaders(g_zdc, &nbSeq, buff2, g_cSize);
 }
 
 
-static ZBUFF_CCtx* g_zbcc = NULL;
-size_t local_ZBUFF_compress(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
+static ZSTD_CStream* g_cstream= NULL;
+size_t local_ZSTD_compressStream(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
 {
-    size_t compressedSize;
-    size_t srcRead = srcSize, dstWritten = dstCapacity;
+    ZSTD_outBuffer buffOut;
+    ZSTD_inBuffer buffIn;
     (void)buff2;
-    ZBUFF_compressInit(g_zbcc, 1);
-    ZBUFF_compressContinue(g_zbcc, dst, &dstWritten, src, &srcRead);
-    compressedSize = dstWritten;
-    dstWritten = dstCapacity-compressedSize;
-    ZBUFF_compressEnd(g_zbcc, ((char*)dst)+compressedSize, &dstWritten);
-    compressedSize += dstWritten;
-    return compressedSize;
+    ZSTD_initCStream(g_cstream, 1);
+    buffOut.dst = dst;
+    buffOut.size = dstCapacity;
+    buffOut.pos = 0;
+    buffIn.src = src;
+    buffIn.size = srcSize;
+    buffIn.pos = 0;
+    ZSTD_compressStream(g_cstream, &buffOut, &buffIn);
+    ZSTD_endStream(g_cstream, &buffOut);
+    return buffOut.pos;
 }
 
-static ZBUFF_DCtx* g_zbdc = NULL;
-static size_t local_ZBUFF_decompress(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
+static ZSTD_DStream* g_dstream= NULL;
+static size_t local_ZSTD_decompressStream(void* dst, size_t dstCapacity, void* buff2, const void* src, size_t srcSize)
 {
-    size_t srcRead = g_cSize, dstWritten = dstCapacity;
+    ZSTD_outBuffer buffOut;
+    ZSTD_inBuffer buffIn;
     (void)src; (void)srcSize;
-    ZBUFF_decompressInit(g_zbdc);
-    ZBUFF_decompressContinue(g_zbdc, dst, &dstWritten, buff2, &srcRead);
-    return dstWritten;
+    ZSTD_initDStream(g_dstream);
+    buffOut.dst = dst;
+    buffOut.size = dstCapacity;
+    buffOut.pos = 0;
+    buffIn.src = buff2;
+    buffIn.size = g_cSize;
+    buffIn.pos = 0;
+    ZSTD_decompressStream(g_dstream, &buffOut, &buffIn);
+    return buffOut.pos;
 }
 
 static ZSTD_CCtx* g_zcc = NULL;
@@ -221,10 +229,10 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
         benchFunction = local_ZSTD_decodeSeqHeaders; benchName = "ZSTD_decodeSeqHeaders";
         break;
     case 41:
-        benchFunction = local_ZBUFF_compress; benchName = "ZBUFF_compressContinue";
+        benchFunction = local_ZSTD_compressStream; benchName = "ZSTD_compressStream";
         break;
     case 42:
-        benchFunction = local_ZBUFF_decompress; benchName = "ZBUFF_decompressContinue";
+        benchFunction = local_ZSTD_decompressStream; benchName = "ZSTD_decompressStream";
         break;
     default :
         return 0;
@@ -289,6 +297,7 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
             }
             iend = ip + ZSTD_blockHeaderSize + cBlockSize;   /* End of first block */
             ip += ZSTD_blockHeaderSize;                      /* skip block header */
+            ZSTD_decompressBegin(g_zdc);
             ip += ZSTD_decodeLiteralsBlock(g_zdc, ip, iend-ip);   /* skip literal segment */
             g_cSize = iend-ip;
             memcpy(buff2, ip, g_cSize);   /* copy rest of block (it starts by SeqHeader) */
@@ -296,10 +305,10 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
             break;
         }
     case 41 :
-        if (g_zbcc==NULL) g_zbcc = ZBUFF_createCCtx();
+        if (g_cstream==NULL) g_cstream = ZSTD_createCStream();
         break;
     case 42 :
-        if (g_zbdc==NULL) g_zbdc = ZBUFF_createDCtx();
+        if (g_dstream==NULL) g_dstream = ZSTD_createDStream();
         g_cSize = ZSTD_compress(buff2, dstBuffSize, src, srcSize, 1);
         break;
 
@@ -311,27 +320,27 @@ static size_t benchMem(const void* src, size_t srcSize, U32 benchNb)
 
     { size_t i; for (i=0; i<dstBuffSize; i++) dstBuff[i]=(BYTE)i; }     /* warming up memory */
 
-    { U32 loopNb;
-    for (loopNb = 1; loopNb <= g_nbIterations; loopNb++) {
-        clock_t const timeLoop = TIMELOOP_S * CLOCKS_PER_SEC;
-        clock_t clockStart;
-        U32 nbRounds;
-        size_t benchResult=0;
-        double averageTime;
+    {   U32 loopNb;
+        for (loopNb = 1; loopNb <= g_nbIterations; loopNb++) {
+            clock_t const timeLoop = TIMELOOP_S * CLOCKS_PER_SEC;
+            clock_t clockStart;
+            U32 nbRounds;
+            size_t benchResult=0;
+            double averageTime;
 
-        DISPLAY("%2i- %-30.30s : \r", loopNb, benchName);
+            DISPLAY("%2i- %-30.30s : \r", loopNb, benchName);
 
-        clockStart = clock();
-        while (clock() == clockStart);
-        clockStart = clock();
-        for (nbRounds=0; BMK_clockSpan(clockStart) < timeLoop; nbRounds++) {
-            benchResult = benchFunction(dstBuff, dstBuffSize, buff2, src, srcSize);
-            if (ZSTD_isError(benchResult)) { DISPLAY("ERROR ! %s() => %s !! \n", benchName, ZSTD_getErrorName(benchResult)); exit(1); }
-        }
-        averageTime = (((double)BMK_clockSpan(clockStart)) / CLOCKS_PER_SEC) / nbRounds;
-        if (averageTime < bestTime) bestTime = averageTime;
-        DISPLAY("%2i- %-30.30s : %7.1f MB/s  (%9u)\r", loopNb, benchName, (double)srcSize / (1 MB) / bestTime, (U32)benchResult);
-    }}
+            clockStart = clock();
+            while (clock() == clockStart);
+            clockStart = clock();
+            for (nbRounds=0; BMK_clockSpan(clockStart) < timeLoop; nbRounds++) {
+                benchResult = benchFunction(dstBuff, dstBuffSize, buff2, src, srcSize);
+                if (ZSTD_isError(benchResult)) { DISPLAY("ERROR ! %s() => %s !! \n", benchName, ZSTD_getErrorName(benchResult)); exit(1); }
+            }
+            averageTime = (((double)BMK_clockSpan(clockStart)) / CLOCKS_PER_SEC) / nbRounds;
+            if (averageTime < bestTime) bestTime = averageTime;
+            DISPLAY("%2i- %-30.30s : %7.1f MB/s  (%9u)\r", loopNb, benchName, (double)srcSize / (1 MB) / bestTime, (U32)benchResult);
+    }   }
     DISPLAY("%2u\n", benchNb);
 
 _cleanOut:
@@ -466,7 +475,7 @@ int main(int argc, const char** argv)
                 switch(argument[0])
                 {
                     /* Display help on usage */
-                case 'h' :
+                case 'h':
                 case 'H': return usage_advanced(exename);
 
                     /* Pause at the end (hidden option) */
